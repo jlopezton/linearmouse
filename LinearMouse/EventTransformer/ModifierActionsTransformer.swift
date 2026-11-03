@@ -29,6 +29,9 @@ class ModifierActionsTransformer {
     private let monotonicClock: () -> UInt64
     private let zoomShortcut: (Bool) -> KeyEquivalentResolver.Shortcut?
 
+    private let postPinch: (CGSGesturePhase, Double) -> Void
+    private var pinchZoomEndTimer: EventThreadTimer?
+    private var pinchZoomHorizontal = false
     private var pinchZoomBegan = false
     private var pinchZoomReversed = false
 
@@ -38,8 +41,12 @@ class ModifierActionsTransformer {
         scrollThrottle: ScrollActionThrottle = .init(),
         scrollGesture: ScrollGestureOwnership = .init(),
         monotonicClock: @escaping () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
+        postPinch: @escaping (CGSGesturePhase, Double) -> Void = { phase, magnification in
+            GestureEvent(zoomSource: nil, phase: phase, magnification: magnification)?.post(tap: .cgSessionEventTap)
+        },
         zoomShortcut: @escaping (Bool) -> KeyEquivalentResolver.Shortcut? = defaultZoomShortcut
     ) {
+        self.postPinch = postPinch
         self.modifiers = modifiers
         self.keySimulator = keySimulator ?? Self.defaultKeySimulator
         self.scrollThrottle = scrollThrottle
@@ -67,7 +74,16 @@ extension ModifierActionsTransformer: EventTransformer {
 
     func transform(_ event: CGEvent, in _: EventTransformerContext) -> CGEvent? {
         if pinchZoomBegan {
-            return handlePinchZoom(event, reverse: pinchZoomReversed)
+            if event.type == .scrollWheel {
+                let view = ScrollWheelEventView(event)
+                let horizontal = view.deltaYSignum == 0
+                if horizontal == pinchZoomHorizontal {
+                    return handlePinchZoom(event, reverse: pinchZoomReversed)
+                }
+                endPinchZoom()
+            } else {
+                return handlePinchZoom(event, reverse: pinchZoomReversed)
+            }
         }
 
         guard event.type == .scrollWheel else {
@@ -79,6 +95,12 @@ extension ModifierActionsTransformer: EventTransformer {
             ? modifiers.vertical
             : modifiers.horizontal else {
             return event
+        }
+
+        let actionFlags: CGEventFlags = [.maskCommand, .maskShift, .maskAlternate, .maskControl]
+        if event.flags.isDisjoint(with: actionFlags),
+           let action = modifiers.unmodified, action != .auto {
+            return handleModifierKeyAction(for: event, action: action)
         }
 
         let actions: [(CGEventFlags.Element, Action?)] = [
@@ -157,23 +179,37 @@ extension ModifierActionsTransformer: EventTransformer {
         }
 
         if event.type == .flagsChanged {
-            pinchZoomBegan = false
-            pinchZoomReversed = false
-            GestureEvent(zoomSource: nil, phase: .ended, magnification: 0)?.post(tap: .cgSessionEventTap)
-            os_log("pinch zoom ended", log: Self.log, type: .info)
+            endPinchZoom()
             return event
         }
 
+        let scrollWheelEventView = ScrollWheelEventView(event)
+        guard scrollWheelEventView.momentumPhase == .none else {
+            return nil
+        }
+        let horizontal = scrollWheelEventView.deltaYSignum == 0
+        let delta = horizontal ? scrollWheelEventView.deltaXPt : scrollWheelEventView.deltaYPt
+        guard delta != 0 else {
+            return nil
+        }
+        scrollGesture.claim()
+
         if !pinchZoomBegan {
-            GestureEvent(zoomSource: nil, phase: .began, magnification: 0)?.post(tap: .cgSessionEventTap)
+            pinchZoomHorizontal = horizontal
+            postPinch(.began, 0)
             pinchZoomBegan = true
             os_log("pinch zoom began", log: Self.log, type: .info)
         }
 
-        let scrollWheelEventView = ScrollWheelEventView(event)
         let direction = reverse ? -1.0 : 1.0
-        let magnification = Double(scrollWheelEventView.deltaYPt) * 0.005 * direction
-        GestureEvent(zoomSource: nil, phase: .changed, magnification: magnification)?.post(tap: .cgSessionEventTap)
+        let magnification = delta * 0.005 * direction
+        postPinch(.changed, magnification)
+        // Mouse wheels have no reliable gesture-ended phase or modifier release.
+        // Finish on the event thread after the wheel has been idle for 150 ms.
+        pinchZoomEndTimer?.invalidate()
+        pinchZoomEndTimer = EventThread.shared.scheduleTimer(interval: 0.15, repeats: false) { [weak self] in
+            self?.endPinchZoom()
+        }
         os_log("pinch zoom changed: magnification=%f", log: Self.log, type: .info, magnification)
 
         return nil
@@ -181,12 +217,17 @@ extension ModifierActionsTransformer: EventTransformer {
 }
 
 extension ModifierActionsTransformer: Deactivatable {
-    func deactivate() {
+    private func endPinchZoom() {
+        pinchZoomEndTimer?.invalidate()
+        pinchZoomEndTimer = nil
         if pinchZoomBegan {
             pinchZoomBegan = false
             pinchZoomReversed = false
-            GestureEvent(zoomSource: nil, phase: .ended, magnification: 0)?.post(tap: .cgSessionEventTap)
-            os_log("ModifierActionsTransformer is inactive, pinch zoom ended", log: Self.log, type: .info)
+            postPinch(.ended, 0)
         }
+    }
+
+    func deactivate() {
+        endPinchZoom()
     }
 }

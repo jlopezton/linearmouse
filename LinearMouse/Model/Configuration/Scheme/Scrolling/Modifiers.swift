@@ -5,6 +5,7 @@ import Foundation
 
 extension Scheme.Scrolling {
     struct Modifiers: Equatable, Codable, ImplicitInitable {
+        var unmodified: Action?
         var command: Action?
         var shift: Action?
         var option: Action?
@@ -28,6 +29,10 @@ extension Scheme.Scrolling.Modifiers {
 
 extension Scheme.Scrolling.Modifiers {
     func merge(into modifiers: inout Self) {
+        if let unmodified {
+            modifiers.unmodified = unmodified
+        }
+
         if let command {
             modifiers.command = command
         }

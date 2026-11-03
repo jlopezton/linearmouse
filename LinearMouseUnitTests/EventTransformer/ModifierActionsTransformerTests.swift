@@ -1,6 +1,7 @@
 // MIT License
 // Copyright (c) 2021-2026 LinearMouse
 
+import GestureKit
 import KeyKit
 @testable import LinearMouse
 import XCTest
@@ -348,5 +349,114 @@ final class ModifierActionsTransformerTests: XCTestCase {
         XCTAssertNil(transformer.transform(event, in: .init(device: nil)))
         XCTAssertTrue(simulator.modifiedPresses.isEmpty)
         XCTAssertTrue(simulator.unmodifiedPresses.isEmpty)
+    }
+}
+
+extension ModifierActionsTransformerTests {
+    private func wheel(x: Double, y: Double = 0, flags: CGEventFlags = []) throws -> CGEvent {
+        let event = try XCTUnwrap(CGEvent(
+            scrollWheelEvent2Source: nil,
+            units: .pixel,
+            wheelCount: 2,
+            wheel1: Int32(y),
+            wheel2: Int32(x),
+            wheel3: 0
+        ))
+        event.flags = flags
+        let view = ScrollWheelEventView(event)
+        view.deltaXPt = x
+        view.deltaYPt = y
+        return event
+    }
+
+    func testUnmodifiedHorizontalPinchPreservesVerticalScrollAndEnds() throws {
+        var phases: [CGSGesturePhase] = []
+        var amounts: [Double] = []
+        let ownership = ScrollGestureOwnership()
+        let transformer = ModifierActionsTransformer(
+            modifiers: .init(horizontal: .init(unmodified: .pinchZoom)),
+            scrollGesture: ownership
+        )            { phases.append($0); amounts.append($1) }
+        let context = EventTransformerContext(device: nil)
+        XCTAssertNil(try transformer.transform(wheel(x: 20), in: context))
+        XCTAssertNil(try transformer.transform(wheel(x: -10), in: context))
+        XCTAssertEqual(phases, [.began, .changed, .changed])
+        XCTAssertEqual(amounts, [0, 0.1, -0.05])
+        XCTAssertTrue(ownership.isOwned)
+        let vertical = try wheel(x: 0, y: 20)
+        XCTAssertIdentical(transformer.transform(vertical, in: context), vertical)
+        XCTAssertEqual(phases.last, .ended)
+        transformer.deactivate()
+        XCTAssertEqual(phases.filter { $0 == .ended }.count, 1)
+    }
+
+    func testUnmodifiedPinchDoesNotOverrideHeldModifiers() throws {
+        var phases: [CGSGesturePhase] = []
+        let transformer = ModifierActionsTransformer(
+            modifiers: .init(horizontal: .init(unmodified: .pinchZoom))
+        )            { phase, _ in phases.append(phase) }
+        let event = try wheel(x: 20, flags: .maskCommand)
+        XCTAssertIdentical(transformer.transform(event, in: EventTransformerContext(device: nil)), event)
+        XCTAssertTrue(phases.isEmpty)
+    }
+
+    func testHorizontalModifierPinchUsesHorizontalDeltaAndReverses() throws {
+        var amounts: [Double] = []
+        let transformer = ModifierActionsTransformer(
+            modifiers: .init(horizontal: .init(command: .pinchZoomReversed))
+        )            { _, amount in amounts.append(amount) }
+        XCTAssertNil(try transformer.transform(
+            wheel(x: 20, flags: .maskCommand), in: EventTransformerContext(device: nil)
+        ))
+        XCTAssertEqual(amounts, [0, -0.1])
+        transformer.deactivate()
+        XCTAssertEqual(amounts.last, 0)
+    }
+
+    func testPinchIgnoresMomentumAndEmptySamples() throws {
+        var phases: [CGSGesturePhase] = []
+        let transformer = ModifierActionsTransformer(
+            modifiers: .init(horizontal: .init(unmodified: .pinchZoom))
+        )            { phase, _ in phases.append(phase) }
+        let context = EventTransformerContext(device: nil)
+        let event = try wheel(x: 20)
+        ScrollWheelEventView(event).momentumPhase = .begin
+        XCTAssertNil(transformer.transform(event, in: context))
+        XCTAssertNil(try transformer.transform(wheel(x: 0), in: context))
+        XCTAssertTrue(phases.isEmpty)
+    }
+
+    func testUnmodifiedActionConfigurationRoundTripAndMerge() throws {
+        let decoder = JSONDecoder()
+        let value = try decoder.decode(Scheme.Scrolling.Modifiers.self, from: Data(
+            #"{"unmodified":{"type":"pinchZoom"},"command":{"type":"zoom"}}"#.utf8
+        ))
+        var merged = Scheme.Scrolling.Modifiers(shift: .alterOrientation)
+        value.merge(into: &merged)
+        XCTAssertEqual(merged.unmodified, .pinchZoom)
+        XCTAssertEqual(merged.command, .zoom)
+        XCTAssertEqual(merged.shift, .alterOrientation)
+        XCTAssertEqual(try decoder.decode(
+            Scheme.Scrolling.Modifiers.self, from: JSONEncoder().encode(merged)
+        ), merged)
+    }
+
+    func testUnmodifiedPinchEndsAfterIdleOnEventThread() throws {
+        let ended = expectation(description: "Pinch ends without a modifier release")
+        EventThread.shared.start()
+        defer { EventThread.shared.stop() }
+        let transformer = ModifierActionsTransformer(
+            modifiers: .init(horizontal: .init(unmodified: .pinchZoom))
+        )            { phase, _ in
+                if phase == .ended {
+                    ended.fulfill()
+                }
+            }
+        let event = try wheel(x: 20)
+        _ = EventThread.shared.performAndWait {
+            XCTAssertNil(transformer.transform(event, in: EventTransformerContext(device: nil)))
+        }
+        wait(for: [ended], timeout: 2)
+        _ = EventThread.shared.performAndWait { transformer.deactivate() }
     }
 }

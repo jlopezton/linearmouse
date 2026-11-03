@@ -304,6 +304,11 @@ declare namespace Scheme {
 
     type Modifiers = {
       /**
+       * @description The action when no command, shift, option or control key is pressed.
+       */
+      unmodified?: Modifiers.Action;
+
+      /**
        * @description The action when command key is pressed.
        */
       command?: Modifiers.Action;

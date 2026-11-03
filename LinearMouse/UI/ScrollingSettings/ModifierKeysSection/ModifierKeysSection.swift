@@ -9,6 +9,7 @@ extension ScrollingSettings {
 
         var body: some View {
             Section(header: Text("Modifier Keys")) {
+                ModifierKeyActionPicker(label: "No modifier", action: $state.modifiers.unmodified)
                 ModifierKeyActionPicker(label: "⌘ (Command)", action: $state.modifiers.command)
                 ModifierKeyActionPicker(label: "⇧ (Shift)", action: $state.modifiers.shift)
                 ModifierKeyActionPicker(label: "⌥ (Option)", action: $state.modifiers.option)

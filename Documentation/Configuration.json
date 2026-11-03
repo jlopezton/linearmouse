@@ -1725,6 +1725,10 @@
         "shift": {
           "$ref": "#/definitions/Scheme.Scrolling.Modifiers.Action",
           "description": "The action when shift key is pressed."
+        },
+        "unmodified": {
+          "$ref": "#/definitions/Scheme.Scrolling.Modifiers.Action",
+          "description": "The action when no command, shift, option or control key is pressed."
         }
       },
       "type": "object"

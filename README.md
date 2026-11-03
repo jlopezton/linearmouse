@@ -16,6 +16,8 @@
 The mouse and trackpad utility for Mac.
 </p>
 
+# This is a forked version by jlopezton that allows zoom to be done with the Horizontal Wheel without a modifier key
+
 ## Get started
 
 [Download LinearMouse](https://github.com/linearmouse/linearmouse/releases/latest/download/LinearMouse.dmg) or visit [linearmouse.app](https://linearmouse.app) to learn more.
